@@ -31,3 +31,6 @@ test/test30.prg
 **/.VSCodeCounter
 testVari
 
+*.exp
+*.ppt
+trash

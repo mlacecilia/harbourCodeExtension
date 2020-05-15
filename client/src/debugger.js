@@ -173,7 +173,13 @@ harbourDebugSession.prototype.launchRequest = function(response, args)
 		this.sourcePaths = this.sourcePaths.concat(args.sourcePaths);
 	}
 	for (let idx = 0; idx < this.sourcePaths.length; idx++) {
-		this.sourcePaths[idx] = trueCase.trueCasePathSync(this.sourcePaths[idx]);
+		try {
+			this.sourcePaths[idx] = trueCase.trueCasePathSync(this.sourcePaths[idx]);
+		} catch(ex) {
+			// path no found
+			this.sourcePaths.splice(idx,1);
+			idx--;
+		}
 	}
 	this.Debugging = !args.noDebug;
 	this.startGo = args.stopOnEntry===false || args.noDebug===true;
@@ -220,6 +226,12 @@ harbourDebugSession.prototype.launchRequest = function(response, args)
 harbourDebugSession.prototype.attachRequest = function(response, args)
 {
 	var port = args.port? args.port : 6110;
+	if(args.process<=0 && (args.program || "").length==0) {
+		response.success = false;
+		response.message = "invalid parameter";
+		this.sendResponse(response);
+		return;
+	}
 	var tc=this;
 	this.justStart = true;
 	this.sourcePaths = []; //[path.dirname(args.program)];
@@ -230,7 +242,13 @@ harbourDebugSession.prototype.attachRequest = function(response, args)
 		this.sourcePaths = this.sourcePaths.concat(args.sourcePaths);
 	}
 	for (let idx = 0; idx < this.sourcePaths.length; idx++) {
-		this.sourcePaths[idx] = trueCase.trueCasePathSync(this.sourcePaths[idx]);
+		try {
+			this.sourcePaths[idx] = trueCase.trueCasePathSync(this.sourcePaths[idx]);
+		} catch(ex) {
+			// path no found
+			this.sourcePaths.splice(idx,1);
+			idx--;
+		}
 	}
 	this.Debugging = !args.noDebug;
 	this.startGo = true;
@@ -271,44 +289,54 @@ harbourDebugSession.prototype.terminateRequest = function(response, args)
 
 harbourDebugSession.prototype.evaluateClient = function(socket, server, args)
 {
-	var nData=0;
 	var tc =this;
-	var exeTarget = path.basename(args.program,path.extname(args.program)).toLowerCase();
+
 	socket.on("data", data=> {
-		if(tc.socket && nData>0)
-		{
-			tc.processInput(data.toString())
-			return;
-		}
-		if(nData>0)
-		{
-			return
-		}
-		nData++;
-		// the client sended exe name and process ID
-		var lines = data.toString().split("\r\n");
-		if(lines.length<2) //todo: check if they arrive in 2 tranches.
-			return;
-		var clPath = path.basename(lines[0],path.extname(lines[0])).toLowerCase();
-		if(clPath!=exeTarget)
-		{
+		try {
+			if(tc.socket==socket) {
+				tc.processInput(data.toString())
+				return;
+			}
+			// the client sended exe name and process ID
+			var lines = data.toString().split("\r\n");
+			if(lines.length<2)  {//todo: check if they arrive in 2 tranches.
+				socket.write("NO\r\n")
+				socket.end();
+				return;
+			}
+			if(args.program && args.program.length>0) {
+				var exeTarget = path.basename(args.program,path.extname(args.program)).toLowerCase();
+				var clPath = path.basename(lines[0],path.extname(lines[0])).toLowerCase();
+				if(clPath!=exeTarget)
+				{
+					socket.write("NO\r\n")
+					socket.end();
+					return;
+				}
+			}
+			var processId = parseInt(lines[1]);
+			if(args.process && args.process>0 && args.process!=processId) {
+				socket.write("NO\r\n")
+				socket.end();
+				return;
+			}
+			socket.write("HELLO\r\n")
+			tc.SetProcess(processId);
+			//connected!
+			tc.sendEvent(new debugadapter.InitializedEvent());
+			server.close();
+			tc.socket = socket;
+			socket.removeAllListeners("data");
+			socket.on("data", data=> {
+				tc.processInput(data.toString())
+			});
+			socket.write(tc.queue);
+			this.justStart = false;
+			tc.queue = "";
+		} catch(ex) {
 			socket.write("NO\r\n")
 			socket.end();
-			return;
-		}
-		socket.write("HELLO\r\n")
-		tc.SetProcess(parseInt(lines[1]));
-		//connected!
-		tc.sendEvent(new debugadapter.InitializedEvent());
-		server.close();
-		tc.socket = socket;
-		socket.removeAllListeners("data");
-		socket.on("data", data=> {
-			tc.processInput(data.toString())
-		});
-		socket.write(tc.queue);
-		this.justStart = false;
-		tc.queue = "";
+	}
 	});
 }
 
