@@ -1,16 +1,45 @@
 # Change Log
 All notable changes to the "Harbour and xHarbour" extension will be documented in this file.
 
+# 1.0.1
+ - **server** fixed table name reader [#73](https://github.com/APerricone/harbourCodeExtension/issues/73)
+ - **server** better go to declarection [#74](https://github.com/APerricone/harbourCodeExtension/issues/74)
+
+# 1.0.0
+ - **server** fixed crash [#70](https://github.com/APerricone/harbourCodeExtension/issues/70)
+
+# 0.9.16
+ - **server** fixed crash on space before -> [#69](https://github.com/APerricone/harbourCodeExtension/issues/69)
+
+# 0.9.15
+ - **server** fixed freeze looking for references last word of the file
+ - **server** even better performance on long splitted line [#68](https://github.com/APerricone/harbourCodeExtension/issues/68) (the sample file come from 1.7sec to 0.17 on my PC)
+
+# 0.9.14
+ - **server** better performance on long splitted line [#68](https://github.com/APerricone/harbourCodeExtension/issues/68)
+ - **server** first support for [semantic token](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide)
+ - **server** first support for "[find all references](https://code.visualstudio.com/api/language-extensions/programmatic-language-features#find-all-references-to-a-symbol)"
+ - **validation** hightlight of unused symbol
+ - **syntax** added shared keyword [#64](https://github.com/APerricone/harbourCodeExtension/issues/64)
+
+# 0.9.13
+ - **debugger** better stability
+
+# 0.9.12
+ - **debugger** better stability
+ - **task** better stability
+ - **task** correct management of batch option
+
 # 0.9.11
  - **server** fixes case of unfound parent [#57](https://github.com/APerricone/harbourCodeExtension/issues/57)
  - **syntax** fixes [memvar aliasing syntax highlighting #58](https://github.com/APerricone/harbourCodeExtension/issues/58),
-                    [Multiline "inline" class methods syntax highlighting #59](https://github.com/APerricone/harbourCodeExtension/issues/59),
-                    [Try catch syntax highlighting #60](https://github.com/APerricone/harbourCodeExtension/issues/60) by [Edgard Lorraine Messias](https://github.com/edgardmessias)
+    [Multiline "inline" class methods syntax highlighting #59](https://github.com/APerricone/harbourCodeExtension/issues/59),
+    [Try catch syntax highlighting #60](https://github.com/APerricone/harbourCodeExtension/issues/60) by [Edgard Lorraine Messias](https://github.com/edgardmessias)
  - **debugger** better step out and step next support
  - **server** better code folding see [#56](https://github.com/APerricone/harbourCodeExtension/issues/56)
  - **task** added temporary variable solver waiting for [VSCode #81007](https://github.com/microsoft/vscode/issues/81007)
 
- Many thanks to [Seth Hovestol](https://github.com/Hovestar) for bug reportinh
+ Many thanks to [Seth Hovestol](https://github.com/Hovestar) for bug reporting
 
 # 0.9.10
  - **debugger** added process list on attach, attach by process Id

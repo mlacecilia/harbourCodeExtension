@@ -1,8 +1,18 @@
 const fs = require("fs");
 const readline = require("readline");
 
+const keywords = ["local", "static", "private", "memvar",
+    "function", "procedure", "return",
+    "if", "else", "elseif", "end if",
+    "end while", "end case", "end do", "end switch", "end class", "end sequence",
+    "do while", "case", "switch", "endcase", "otherwise", "default",
+    "for", "for each", "to", "in", "next",
+    "exit", "loop", "try", "catch", "finally",
+    "begin sequence", "begin sequence with",
+    "recover", "recover using"]
+
 // beta feature
-const commandPartsingEnabled = false;
+const commandParsingEnabled = false;
 
 const procRegEx = /\s*((?:proc(?:e(?:d(?:u(?:r(?:e)?)?)?)?)?)|func(?:t(?:i(?:o(?:n)?)?)?)?)\s+([a-z_][a-z0-9_]*)\s*(?:\(([^\)]*)\))?/i;
 const methodRegEx = /\s*(meth(?:o(?:d)?)?)\s+(?:(?:(?:proc(?:e(?:d(?:u(?:r(?:e)?)?)?)?)?)|func(?:t(?:i(?:o(?:n)?)?)?)?)\s+)?([a-z_][a-z0-9_]*)\s*(?:\(([^\)]*)\))?(?:\s*class\s+([a-z_][a-z0-9_]*))?(\s+inline)?/i
@@ -29,7 +39,6 @@ function Provider(light) {
     })
 }
 
-
 Provider.prototype.Clear = function () {
     // *********** data used during the parsing
     /** @type {boolean} is true for multi line comments */
@@ -40,9 +49,11 @@ Provider.prototype.Clear = function () {
     this.currLinePreProc = "";
     /** @type {string} current line parsing, without string and comments */
     this.currLine = "";
+    this.clPPArray = [];
+    this.clArray = [];
     /** @type {number} current line number */
     this.lineNr = -1;
-    /** @type {number} for statemente that continues on next line, it indicates the first */
+    /** @type {number} for statement that continues on next line, it indicates the first */
     this.startLine = 0;
     /** @type {number} last line number not empty after removing all comments */
     this.lastCodeLine = 0;
@@ -83,9 +94,9 @@ Provider.prototype.Clear = function () {
     this.multilineComments = [];
     /** TEMP: current first line of comment,
      * @type {number} */
-    this.firstLineCommment = -1;
+    this.firstLineComment = -1;
     /** Position of curly braces {} on C Code
-     * an array of array 4 number with line-col of open curly brace, and line-col of cloe curly brace
+     * an array of array 4 number with line-col of open curly brace, and line-col of close curly brace
      * @type {Array<Array<number>>}
      * */
     this.cCodeFolder = [];
@@ -94,6 +105,35 @@ Provider.prototype.Clear = function () {
     this.harbourDocs = [];
     // command definitions
     this.commands = [];
+    /** the state of lines
+     * @type {Array<lineState>} */
+    this.lineStates = [];
+    /** @type {Object.<string, Array<reference>>} */
+    this.references = {};
+}
+
+/**
+ * @constructor
+ * @param {(0|1|2)} type the state of line: 0 is an harbour line, 1 is a C line, 2 is a text line
+ * @param {Boolean} comment this indicate that next line starts with a comment (this line or a previous ones contains a /* )
+ */
+function lineState(type,comment) {
+    this.type = typeof(type)=="number"? type : 0;
+    this.comment = typeof(comment)=="boolean"? comment :  false;
+}
+
+/**
+ *
+ * @param {("variable"|"function"|"data"|"method"|"field")} type
+ * @param {number} line
+ * @param {number} col
+ * @param {string} howWrite
+ */
+function reference(type,line,col,howWrite) {
+    this.type = type;
+    this.line = line;
+    this.col = col;
+    this.howWrite = howWrite
 }
 
 Provider.prototype.resetComments = function () {
@@ -183,7 +223,7 @@ Provider.prototype.addInfo = function (name, kind, like, parent, search) {
                         (this.removedComments[ic].pos < nextComma && //inside this elements commas
                             this.removedComments[ic].pos > prevComma) ||
                         (this.removedComments[ic].pos >= line.length &&  // the comment is at end of line
-                            line.indexOf(",", nextComma + 1) < 0))) // it is the last elemen in the line
+                            line.indexOf(",", nextComma + 1) < 0))) // it is the last element in the line
                         thisComment = this.removedComments[ic].value;
                 }
                 var ii = new Info(name, kind, like, parent, this.currentDocument,
@@ -234,159 +274,126 @@ function Group(type) {
     this.positions = [];
 }
 
-
 Group.prototype.addRange = function (line, startCol, endCol, text) {
     this.positions.push(new KeywordPos(line, startCol, endCol, text));
 }
 
 Provider.prototype.linePP = function (line) {
-    var oriLine = line;
-    this.lineNr++;
+    var i=0;
     if (this.comment) {
-        var eC = line.indexOf("*/");
-        if (eC == -1) {
+        var endComment = line.indexOf("*/");
+        if (endComment == -1) {
             this.lastComment += "\r\n" + line;
-            return;
+            this.lineStates.push(new lineState(this.cMode? 1 : 0,true))
+            return "";
         }
-        this.lastComment += "\r\n" + line.substr(0, eC)
-        line = line.substr(0, eC + 2).replace(/[^\s]/g, " ") + line.substr(eC + 2);
+        this.lastComment += "\r\n" + line.substr(0, endComment)
+        line = " ".repeat(endComment+2) + line.substr(endComment + 2);
         this.comment = false;
+        i = endComment+2;
     }
     if(this.pragmaText) {
-        this.currLine="";
         if( /^\s*(?:#\s*pragma\s+__)?endtext/i.test(line) ) {
-            line ="";
-            this.currLinePreProc = oriLine;
             this.pragmaText = false
-        } else
-            return;
-    }
-    if (this.cont) {
-        if (!this.currLine.endsWith("\r\n")) {
-            if (this.currLine.endsWith("\n") || this.currLine.endsWith("\r"))
-                this.currLine.substr(0, this.currLine.length - 1);
-            this.currLine += "\r\n";
-            this.currLinePreProc += "\r\n";
-        }
-        this.currLine += line;
-        this.currLinePreProc += oriLine;
-    } else {
-        this.startLine = this.lineNr;
-        this.currLine = line;
-        this.currLinePreProc = oriLine;
-
-        if( /^\s*#\s*pragma\s+(?:__text|__stream|__cstream)\b/i.test(line) ||
-            /^\s*(text)\b/i.test(line)) {
-            this.currLine = "";
-            this.pragmaText = true;
-            return;
+            this.lineStates.push(new lineState())
+            return "";
+        } else {
+            this.lineStates.push(new lineState(2))
+            return "";
         }
     }
-
-    this.cont = line.trim().endsWith(";") && !this.cMode;
-}
-
-Provider.prototype.linePrepare = function (line) {
-    var justStart = true, precJustStart = true;
-    var precC = " ", c = " ";
-    var string = "", stringStart;
-    if (this.currLine.trim().length == 0) {
-        if (line.trim().length == 0)
-            this.resetComments()
-        this.currLine = "";
-        this.currLinePreProc = "";
-        return;
+    if (line.trim().length == 0) {
+        if(justStart) this.resetComments()
+        this.lineStates.push(new lineState(this.cMode? 1 : 0))
+        return "";
     }
-    if (!this.cMode && this.currLine.trim().match(/^NOTE\s/i)) {
-        this.lastComment += "\r\n" + this.currLine.trim().substr(4);
-        this.currLine = "";
-        this.currLinePreProc = "";
-        if (this.firstLineCommment < 0) this.firstLineCommment = this.lineNr;
-        return;
+    if((!this.cont) && ( /^\s*#\s*pragma\s+(?:__text|__stream|__cstream)\b/i.test(line) || /^\s*(text)\b/i.test(line))) {
+        this.pragmaText = true;
+        this.lineStates.push(new lineState(this.cMode? 1 : 0))
+        return "";
     }
+
+    var prevJustStart, justStart = !this.cont;
+    var prevC = " ", c = " ", prevCNoSpace="";
     var lineStart = 0;
-    for (var i = 0; i < this.currLine.length; i++) {
-        precC = c;
-        precJustStart = justStart;
-        c = this.currLine[i];
+    for (; i < line.length; i++) {
+        prevC = c;
+        prevCNoSpace = (c == " " || c == '\t') ? prevCNoSpace : c;
+        prevJustStart = justStart;
+        c = line[i];
         if (justStart) {
-            justStart = (precC == " " || precC == '\t');
-        }
-        if (c == "\n" || precC == "\r") lineStart = i + 1;
-        // already in string
-        if (string.length != 0) {
-            if (c == string[0]) {
-                if (string == '"e' && precC == '\\')
-                    continue; // escaped " inside escaped string
-                this.currLine = this.currLine.substring(0, stringStart + 1) + ' '.repeat(i - stringStart - 1) + this.currLine.substring(i);
-                string = "";
-            }
-            continue;
+            justStart = (prevC == " " || prevC == '\t');
+            lineStart = i;
         }
         // check code
+        if (justStart && !this.cMode && (c=='n' || c=='N') && !this.cMode && line.substr(i,i+4).toLowerCase()=='note') {
+            this.lastComment += "\r\n" + line.trim().substr(4);
+            if (this.firstLineComment < 0) this.firstLineComment = this.lineNr;
+            this.lineStates.push(new lineState(this.cMode? 1 : 0))
+            return "";
+        }
         if (c == "*") {
-            if (precC == "/") {
-                var endC = this.currLine.indexOf("*/", i + 1)
-                if (endC > 0) {
-                    if (!precJustStart) this.newComment()
-                    this.lastComment = "\r\n" + this.currLine.substr(i + 1, endC - i - 1)
-                    this.lastCommentPos = i - lineStart;
-                    this.newComment();
-                    this.currLine = this.currLine.substr(0, i - 1) +
-                        " ".repeat(endC - i + 3) +
-                        this.currLine.substr(endC + 2);
-					this.cont = this.currLine.trim().endsWith(";");
-                    continue;
-                } else {
-                    if (!precJustStart)
-                        this.newComment();
-                    this.lastComment += "\r\n" + this.currLine.substr(i + 1)
-                    this.lastCommentPos = i - lineStart;
-                    this.comment = true;
-                    this.currLine = this.currLine.substr(0, i - 1)
-                    if (this.firstLineCommment < 0) this.firstLineCommment = this.lineNr;
-                    return;
-                }
-            }
             if (justStart && !this.cMode) {
                 // commented line: skip
-                this.lastComment += "\r\n" + this.currLine.substr(i + 1)
-                this.currLine = "";
-				this.currLinePreProc = "";
-                if (this.firstLineCommment < 0) this.firstLineCommment = this.lineNr;
-                return;
+                this.lastComment += "\r\n" + line.substr(i + 1)
+                if (this.firstLineComment < 0) this.firstLineComment = this.lineNr;
+                this.lineStates.push(new lineState(this.cMode? 1 : 0))
+                return "";
+            }
+            if (prevC == "/") {
+                var endComment = line.indexOf("*/", i + 1)
+                if (endComment > 0) {
+                    if (!prevJustStart) this.newComment()
+                    this.lastComment = "\r\n" + line.substr(i + 1, endComment - i - 1)
+                    this.lastCommentPos = i - lineStart;
+                    this.newComment();
+                    line = line.substr(0, i - 1) + " ".repeat(endComment - i + 3) + line.substr(endComment + 2);
+                    c=" ";
+                    i=endComment;
+                    continue;
+                } else {
+                    if (!prevJustStart)
+                        this.newComment();
+                    this.lastComment += "\r\n" + line.substr(i + 1)
+                    this.lastCommentPos = i - lineStart;
+                    this.comment = true;
+                    line = line.substr(0, i - 1)
+                    if (this.firstLineComment < 0) this.firstLineComment = this.lineNr;
+                    break;
+                }
             }
         }
-        if ((c == "/" && precC == "/") || (c == "&" && precC == "&" && !this.cMode)) {
-            if (!precJustStart)
+        if ((c == "/" && prevC == "/") || (c == "&" && prevC == "&" && !this.cMode)) {
+            if (!prevJustStart)  {
                 this.newComment();
-            this.lastComment += "\r\n" + this.currLine.substr(i + 1)
-            this.lastCommentPos = i + 1 - lineStart;
-            this.currLine = this.currLine.substr(0, i - 1)
-            this.cont = this.currLine.trim().endsWith(";");
-            if (precJustStart && this.firstLineCommment < 0)
-                this.firstLineCommment = this.lineNr;
-            return;
-        }
-        if (c == '"') {
-            string = c;
-            stringStart = i;
-            if (precC == "e" || this.cMode) {
-                string += 'e';
+                if (this.firstLineComment < 0) this.firstLineComment = this.lineNr;
             }
+            this.lastComment += "\r\n" + line.substr(i + 1)
+            this.lastCommentPos = i + 1 - lineStart;
+            line = line.substr(0, i - 1)
+            break;
+        }
+        if (c == '"' || c=="'" || (c == "[" && /[^a-zA-Z0-9_\[\]]/.test(prevCNoSpace) && !/^\s*#/.test(line))) {
+            var endString = line.indexOf(c=="["? "]" : c, i+1);
+            if (c=='"' && (prevC == "e" || this.cMode)) {
+                while(endString>0 && line[endString-1]=="\\") {
+                    endString = line.indexOf('"', endString+1);
+                }
+            }
+            if(endString<0) {
+                //error
+                line = line.substr(0, i - 1)
+                break;
+            }
+            line = line.substr(0, i+1) + " ".repeat(endString - i-1) + line.substr(endString);
+            i = endString+1;
+            c=" ";
             continue;
         }
-        if (c == "'") {
-            string = c;
-            stringStart = i;
-            continue;
-        }
-        if (c == "[" && /[^a-zA-Z0-9_\[\]]/.test(precC) && !/^\s*#/.test(this.currLine)) {
-            string = "]";
-            stringStart = i;
-        }
-        continue;
     }
+    this.lineStates.push(new lineState(this.cMode? 1 : 0,this.comment))
+    this.cont = line.trim().endsWith(";");
+    return line
 }
 
 Provider.prototype.parseDeclareList = function (list, kind, parent) {
@@ -403,7 +410,7 @@ Provider.prototype.parseDeclareList = function (list, kind, parent) {
             case 3: filter = /"[^"]*"/g; break;        // "" string
             case 4: filter = /\[[^\[\]]*\]/g; break;    // [] string or array index
             case 5: filter = /{[^{}]*}/g; break;        // {} array declaration
-            case 6: filter = /:=(?:[^,]|$)*/g; break;         // Assegnation
+            case 6: filter = /:=(?:[^,]|$)*/g; break;         // Assignation
         }
         if (filter == undefined)
             break;
@@ -424,18 +431,10 @@ Provider.prototype.parseDeclareList = function (list, kind, parent) {
     }
 }
 
-Provider.prototype.parseCommand = function () {
-    if (!commandPartsingEnabled)
-        return;
-    var pos = this.currLine.match(/\s+/);
-    pos = pos.index + pos[0].length;
-    var endDefine = this.currLine.indexOf("=>");
-    if (endDefine < 0) return; // incomplete code
-    var definePart = this.currLine.substring(pos, endDefine).replace(/;\s+/g, "");
-    var resultPart = this.currLine.substring(endDefine + 2).replace(/;\s+/g, "");
+function CommandSplitDefinition(definePart) {
     var commandResult = [];
     // SplitDefinePart
-    pos = 0;
+    var pos = 0;
     while (pos < definePart.length) {
         while (pos < definePart.length && [" ", "\t", "\r", "\n"].indexOf(definePart.charAt(pos)) >= 0)
             pos++;
@@ -483,7 +482,7 @@ function CommandPartToRegex(text) {
 		return undefined;
 	var pattern;
     // https://stackoverflow.com/a/3561711/854279
-	// escape all control charecters
+	// escape all control characters
 	pattern = text.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 	//
 	pattern = pattern.replace(/\s+/g, "\\s*");
@@ -527,7 +526,7 @@ function CommandPartToSnippet(text, fixed, resultPart) {
 }
 
 Provider.prototype.parseCommand = function (translate) {
-	if (!commandPartsingEnabled)
+	if (!commandParsingEnabled)
 		return;
 	// find the define part and the result part
 	var pos = this.currLine.match(/^\s*#\w?(?:command|translate)\s+/i);
@@ -537,7 +536,7 @@ Provider.prototype.parseCommand = function (translate) {
 	if (endDefine < 0) return; // incomplete code
 	var definePart = this.currLine.substring(pos, endDefine).replace(/;\s+/g, "");
 	var resultPart = this.currLine.substring(endDefine + 2).replace(/;\s+/g, "");
-	// spli the define part
+	// split the define part
 	var commandResult = CommandSplitDefinition(definePart);
 	// create a name from first fixed part
 	var i = 0;
@@ -594,7 +593,9 @@ Provider.prototype.parseHarbour = function (words) {
     if (words[0][0] == '#') {
         if (words[0] == '#include') {
             //TODO: check if words1 first and last letter are "" or <>
-            this.includes.push(words1.substr(1, words1.length - 2));
+            var words = this.currLinePreProc.replace(/\s+/g, " ").trim().split(" ");
+            if (words.length > 1)
+                this.includes.push(words[1].substr(1, words[1].length - 2));
         } else if (words[0] == '#define') {
             var r = defineRegEx.exec(this.currLinePreProc);
             if (r) {
@@ -606,94 +607,94 @@ Provider.prototype.parseHarbour = function (words) {
 		} else if (words[0].endsWith('command') || words[0].endsWith('translate')) {
 			this.parseCommand(words[0].endsWith('translate'));
         }
-    } else
+    } else {
         if (this.currentClass && (words[0] == "endclass" || (words[0] == "end" && words[1] == "class"))) {
             if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
             this.currentMethod = undefined;
             this.currentClass.endLine = this.lineNr;
-        } else
-            if (words[0].length >= 4) {
-                if ((words[0] == "class") || (words[0] == "create" && words[1] == "class")) {
-                    if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
-                    this.currentMethod = undefined;
-                    if (words[0] == "create")
-                        this.currentClass = this.addInfo(words[2], 'class', "definition")
-                    else
-                        this.currentClass = this.addInfo(words1, 'class', "definition")
+        } else if (words[0].length >= 4) {
+            if ((words[0] == "class") || (words[0] == "create" && words[1] == "class")) {
+                if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
+                this.currentMethod = undefined;
+                if (words[0] == "create")
+                    this.currentClass = this.addInfo(words[2], 'class', "definition")
+                else
+                    this.currentClass = this.addInfo(words1, 'class', "definition")
+            } else
+                if (words[0] == "data" || words[0] == "var") {
+                    if (this.currentClass) {
+                        words[1] = words1;
+                        this.parseDeclareList(words.slice(1).join(" "), 'data', this.currentClass)
+                    }
                 } else
-                    if (words[0] == "data" || words[0] == "var") {
-                        if (this.currentClass) {
-                            words[1] = words1;
-                            this.parseDeclareList(words.slice(1).join(" "), 'data', this.currentClass)
+                    if (words[0] == "method".substr(0, words[0].length)) {
+                        var r = methodRegEx.exec(this.currLine);
+                        if (r) {
+                            var fLike = "definition"
+                            if (this.currentClass) fLike = "declaration";
+                            if (r[4] && r[4].length) {
+                                r[4] = r[4].toLowerCase();
+                                fLike = "definition";
+                                if ((this.currentClass && this.currentClass.nameCmp != r[4]) || (!this.currentClass)) {
+                                    this.currentClass = this.funcList.find((v) => v.nameCmp == r[4]);
+                                }
+                            }
+                            if (r[5] && r[5].length) fLike = "definition";
+                            if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
+                            this.currentMethod = this.addInfo(r[2], 'method', fLike, this.currentClass || r[4]);
+
+                            if (r[3] && r[3].length)
+                                this.parseDeclareList(r[3], "param", this.currentMethod);
                         }
                     } else
-                        if (words[0] == "method".substr(0, words[0].length)) {
-                            var r = methodRegEx.exec(this.currLine);
+                        if (words[0] == "procedure".substr(0, words[0].length) ||
+                            words[0] == "function".substr(0, words[0].length) ||
+                            (
+                                (
+                                    words[0] == "static".substr(0, words[0].length) ||
+                                    words[0] == "init" ||
+                                    words[0] == "exit"
+                                ) &&
+                                words[1].length >= 4 &&
+                                (
+                                    words[1] == "procedure".substr(0, words[1].length) ||
+                                    words[1] == "function".substr(0, words[1].length)
+                                )
+                            )) {
+                            var r = procRegEx.exec(this.currLine);
                             if (r) {
-                                var fLike = "definition"
-                                if (this.currentClass) fLike = "declaration";
-                                if (r[4] && r[4].length) {
-                                    r[4] = r[4].toLowerCase();
-                                    fLike = "definition";
-                                    if ((this.currentClass && this.currentClass.nameCmp != r[4]) || (!this.currentClass)) {
-                                        this.currentClass = this.funcList.find((v) => v.nameCmp == r[4]);
-                                    }
-                                }
-                                if (r[5] && r[5].length) fLike = "definition";
+                                var kind = r[1].startsWith('p') || r[1].startsWith('P') ? "procedure" : "function";
+                                if (words[0].startsWith("stat")) kind += "*";
                                 if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
-                                this.currentMethod = this.addInfo(r[2], 'method', fLike, this.currentClass || r[4]);
-
+                                this.currentMethod = this.addInfo(r[2], kind, "definition");
                                 if (r[3] && r[3].length)
                                     this.parseDeclareList(r[3], "param", this.currentMethod);
+
                             }
                         } else
-                            if (words[0] == "procedure".substr(0, words[0].length) ||
-                                words[0] == "function".substr(0, words[0].length) ||
-                                (
-                                    (
-                                        words[0] == "static".substr(0, words[0].length) ||
-                                        words[0] == "init" ||
-                                        words[0] == "exit"
-                                    ) &&
-                                    words[1].length >= 4 &&
-                                    (
-                                        words[1] == "procedure".substr(0, words[1].length) ||
-                                        words[1] == "function".substr(0, words[1].length)
-                                    )
-                                )) {
-                                var r = procRegEx.exec(this.currLine);
-                                if (r) {
-                                    var kind = r[1].startsWith('p') || r[1].startsWith('P') ? "procedure" : "function";
-                                    if (words[0].startsWith("stat")) kind += "*";
-                                    if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
-                                    this.currentMethod = this.addInfo(r[2], kind, "definition");
-                                    if (r[3] && r[3].length)
-                                        this.parseDeclareList(r[3], "param", this.currentMethod);
-
+                            if (words[0] == "local".substr(0, words[0].length) ||
+                                words[0] == "public".substr(0, words[0].length) ||
+                                words[0] == "private".substr(0, words[0].length) ||
+                                words[0] == "static".substr(0, words[0].length) ||
+                                words[0] == "memvar".substr(0, words[0].length) ||
+                                words[0] == "field".substr(0, words[0].length)) {
+                                // skip this in light mode
+                                if (this.currentMethod && this.light)
+                                    return
+                                if (this.currentMethod || words[0].startsWith("stat") ||
+                                    words[0].startsWith("memv") || words[0].startsWith("fiel")) {
+                                    var kind = "local";
+                                    if (words[0].startsWith("publ")) kind = "public";
+                                    if (words[0].startsWith("priv")) kind = "private";
+                                    if (words[0].startsWith("stat")) kind = "static";
+                                    if (words[0].startsWith("memv")) kind = "memvar";
+                                    if (words[0].startsWith("fiel")) kind = "field";
+                                    words[1] = words1;
+                                    this.parseDeclareList(words.slice(1).join(" "), kind, this.currentMethod);
                                 }
-                            } else
-                                if (words[0] == "local".substr(0, words[0].length) ||
-                                    words[0] == "public".substr(0, words[0].length) ||
-                                    words[0] == "private".substr(0, words[0].length) ||
-                                    words[0] == "static".substr(0, words[0].length) ||
-                                    words[0] == "memvar".substr(0, words[0].length) ||
-                                    words[0] == "field".substr(0, words[0].length)) {
-                                    // skip this in light mode
-                                    if (this.currentMethod && this.light)
-                                        return
-                                    if (this.currentMethod || words[0].startsWith("stat") ||
-                                        words[0].startsWith("memv") || words[0].startsWith("fiel")) {
-                                        var kind = "local";
-                                        if (words[0].startsWith("publ")) kind = "public";
-                                        if (words[0].startsWith("priv")) kind = "private";
-                                        if (words[0].startsWith("stat")) kind = "static";
-                                        if (words[0].startsWith("memv")) kind = "memvar";
-                                        if (words[0].startsWith("fiel")) kind = "field";
-                                        words[1] = words1;
-                                        this.parseDeclareList(words.slice(1).join(" "), kind, this.currentMethod);
-                                    }
-                                } //else
-            }
+                            } //else
+        }
+    }
 }
 
 Provider.prototype.parseC = function () {
@@ -826,24 +827,39 @@ Provider.prototype.AddMultilineComment = function (startLine, endLine) {
  * @param {string} line
  */
 Provider.prototype.parse = function (line) {
-    this.linePP(line);
-    if (this.comment || this.pragmaText) return;
-    this.linePrepare(line);
-    if (this.currLine.trim().length == 0 || this.cont) return;
+    this.lineNr++;
+    var wasCont = this.cont;
+    var linePP = this.linePP(line);
+    if(wasCont) {
+        this.clPPArray.push(line);
+        this.clArray.push(linePP);
+    } else {
+        this.clPPArray = [line];
+        this.clArray = [linePP];
+        this.startLine = this.lineNr;
+    }
+    if(!this.cMode) this.findDBReferences(linePP)
+    if (this.comment || this.pragmaText || this.cont) return;
+    this.currLinePreProc = this.clPPArray.join("\r\n")
+    this.currLine = this.clArray.join("\r\n")
+    if(this.currLine.trim().length == 0) return;
     /** @type{string[]} */
-    if (this.firstLineCommment >= 0) {
-        if (this.firstLineCommment < this.startLine - 1)
-            this.AddMultilineComment(this.firstLineCommment, this.startLine - 1);
-        this.firstLineCommment = -1;
+    if (this.firstLineComment >= 0) {
+        if (this.firstLineComment < this.startLine - 1)
+            this.AddMultilineComment(this.firstLineComment, this.startLine - 1);
+        this.firstLineComment = -1;
     }
     if (this.cMode) {
         //console.debug(this.lineNr+"-"+this.currLine);
         this.parseC();
-        if (this.doGroups) this.updateGroups(!this.cMode);
+        if (this.doGroups) this.updateGroups();
     } else {
         var lines = [this.currLine];
-        if (! /^\s*#/.test(this.currLine)) // if does not start with #, see #44
+        if (! /^\s*#/.test(this.currLine)) {// if does not start with #, see #44
+            // split line in its component for example
+            // if lCondition ; a+=b ; endif
             this.currLine.split(/;(?!\s+[\r\n])/)
+        }
         var pre = ""
         var code = false;
         for (var i = 0; i < lines.length; i++) {
@@ -853,9 +869,8 @@ Provider.prototype.parse = function (line) {
             if (words.length == 0) continue;
             code = true;
             words[0] = words[0].toLowerCase();
-            this.findDBReferences();
+            if (this.doGroups) this.updateGroups();
             this.parseHarbour(words);
-            if (this.doGroups) this.updateGroups(true);
             pre += " ".repeat(lines[i].length+1); //add the ; see #44
         }
     }
@@ -885,8 +900,8 @@ Provider.prototype.parseString = function (txt, docName, cMode) {
 Provider.prototype.endParse = function () {
     if (this.currentMethod) this.currentMethod.endLine = this.lastCodeLine;
     this.currentMethod = undefined;
-    if (this.firstLineCommment > 0 && this.firstLineCommment < this.lineNr - 1)
-        this.AddMultilineComment(this.firstLineCommment, this.lineNr - 1);
+    if (this.firstLineComment > 0 && this.firstLineComment < this.lineNr - 1)
+        this.AddMultilineComment(this.firstLineComment, this.lineNr - 1);
     for (let i = 0; i < this.harbourDocs.length; i++) {
         var doc = this.harbourDocs[i];
         if (!doc.name) continue;
@@ -916,31 +931,89 @@ Provider.prototype.parseFile = function (file, docName, cMode, encoding) {
         this.cMode = cMode;
     encoding = encoding || "utf8";
     this.currentDocument = docName;
+    //console.log(">>> Start parseFile: "+file)
     return new Promise((resolve, reject) => {
         var reader = readline.createInterface({ input: fs.createReadStream(file, encoding) });
         reader.on("line", d => providerThisContext.parse(d));
         reader.on("close", () => {
+            //console.log("<<<  End  parseFile: "+file)
             providerThisContext.endParse();
             resolve(providerThisContext);
         })
     });
 }
 
-Provider.prototype.findDBReferences = function () {
-    var dbRegex = /([a-z0-9_]+|\([^\(\)]+\))->([a-z0-9_]+)/gi
-    var dbRef;
-    while (dbRef = dbRegex.exec(this.currLine)) {
-        var dbName = dbRef[1].toLowerCase().replace(" ", "").replace("\t", "");
-        var fieldName = dbRef[2].toLowerCase();
-        if (dbName == 'field') {
-            this.addInfo(dbRef[2], "field", "reference", undefined, true);
-        } else {
-            if (!(dbName in this.databases))
-                this.databases[dbName] = { name: dbRef[1], fields: {} };
-            if (!(fieldName in this.databases[dbName].fields)) {
-                this.databases[dbName].fields[fieldName] = dbRef[2];
-            }
+Provider.prototype.findDBReferences = function (line) {
+    var charRegEx= /[a-z0-9_\(\)]/
+    var wordRegEx = /\b([a-z_][a-z0-9_]*)\s*([^a-z0-9_]*)/gi
+    var match, refs=[], dbName;
+    if(/^\s*#/.test(this.currLine)) {
+        // don't parse pre proc
+        if(this.currLine.indexOf("=>")<0)
+            return;
+        var arrow = line.indexOf("=>")
+        if(arrow>=0) {
+            line = " ".repeat(arrow+2) + line.substr(arrow+2)
         }
+    }
+    var prevWord, cmpName = ""
+    while (match = wordRegEx.exec(line)) {
+        prevWord = cmpName
+        var prevC = match.index>0? line[match.index-1] : ""
+        if(match[2][0] == "." && prevC==".") // logical keyword
+            continue;
+        if(match[2][0] == ">" && prevC=="<") // command keyword
+            continue;
+        if(prevC=="#") continue; //preproc line
+        var type = prevC==":" ? "data" : "variable"
+        cmpName = match[1].toLowerCase();
+        if(keywords.indexOf(cmpName)>=0) continue;
+        if(match[2][0] == "(") type = prevC==":" ? "method" : "function"
+        else if(dbName) {
+            var dbCmd = dbName.toLowerCase();
+            if(dbCmd!="field") {
+                if (!(this.databases[dbCmd]))
+                    this.databases[dbCmd] = { name: dbName, fields: {} };
+                if (!(this.databases[dbCmd].fields[dbCmd])) {
+                    this.databases[dbCmd].fields[cmpName] = match[1];
+                }
+            }
+            type="field"
+            dbName = "";
+        }
+        if(prevWord.startsWith("func") || prevWord.startsWith("proc")) type = "function"
+        if(prevWord=="method") type = "method"
+        if(prevWord=="access" || prevWord=="assign" || prevWord=="data") type = "data"
+
+        if(match[2].endsWith("->")) {
+            var pos = match.index + match[0].length - 3;
+            var pdb = pos;
+            var dbName = "";
+            var nBracket = 0;
+            while ((line[pdb] == ' ' || line[pdb] == '\t') && pdb>0) pdb--;
+            while (nBracket > 0 || charRegEx.test(line[pdb])) {
+                var c = line[pdb];
+                pdb--;
+                if(pdb==-1) break;
+                if (c == ')') nBracket++;
+                if (c == '(') {
+                    if(nBracket==0) {
+                        pdb++;
+                        break;
+                    }
+                    nBracket--;
+                }
+            }
+            dbName = line.substring(pdb+1,pos+1).replace(/\s+/g, "")
+        }
+        if(cmpName) {
+            if (!(this.references[cmpName])) {
+                this.references[cmpName] = [];
+            }
+            if(Array.isArray(this.references[cmpName]))
+                this.references[cmpName].push( new reference(type,this.lineNr,match.index, match[1]))
+        }
+        //console.log(`${this.lineNr.toString().padStart(5)}:${match.index.toString().padEnd(5)} ${type.padEnd(20)} ${match[1]} ${match.index} `)
     }
 }
 
@@ -959,6 +1032,7 @@ var group_keywords = [
 var preproc_keywords = [
     ["#if", /#if(?:n?def)?\b/, /#else(?:if)?\b/, /#end\s*(?:if)?\b/]
 ];
+
 function removeStrings(keywords) {
     for(let i=0;i<keywords.length;++i)
     for(let j=1;j<keywords[i].length;++j)
@@ -975,7 +1049,7 @@ removeStrings(group_keywords);
  * @param {Array<Group>} destStack destination array of pending groups
  * @param {Array<Array<string|RegExp>>} keywords  array of groups keywords
  * @param {String} checkString string to check, already trimmed at start  and converted to lowercase
- * @param {numer} pos number of trimmed character at start
+ * @param {number} pos number of trimmed character at start
  * @param {number} lineNr current line number
  */
 function GroupManagement(dest, destStack, keywords, checkString, pos, lineNr) {
@@ -1014,14 +1088,16 @@ function GroupManagement(dest, destStack, keywords, checkString, pos, lineNr) {
     }
 }
 
-Provider.prototype.updateGroups = function (harbour) {
+Provider.prototype.updateGroups = function () {
     var checkString = this.currLine.toLowerCase();
     var pos = checkString.length - checkString.trimLeft().length;
     checkString = checkString.substr(pos);
     var ln = this.startLine;
-    if (harbour) GroupManagement(this.groups, this.groupStack, group_keywords, checkString, pos, ln);
+    if (!this.cMode) GroupManagement(this.groups, this.groupStack, group_keywords, checkString, pos, ln);
     GroupManagement(this.preprocGroups, this.preprocGroupStack, preproc_keywords, checkString, pos, ln);
 }
 
 exports.Info = Info;
 exports.Provider = Provider;
+exports.keywords = keywords;
+exports.reference = reference;

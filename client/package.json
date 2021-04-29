@@ -2,7 +2,7 @@
     "name": "harbour",
     "displayName": "Harbour and xHarbour",
     "description": "Harbour and xHarbour languages support for visual studio code",
-    "version": "0.9.11",
+    "version": "1.0.1",
     "publisher": "aperricone",
     "icon": "harbourIcon.png",
     "main": "./dist/extension",
@@ -11,7 +11,7 @@
     },
     "activationEvents": [
         "onLanguage:harbour",
-        "onCommand:harbour.getdbgcode",
+        "onCommand:harbour.getDbgCode",
         "workspaceContains:**/*.prg"
     ],
     "engines": {
@@ -25,10 +25,10 @@
     ],
     "dependencies": {
         "true-case-path": "^2.2.1",
-        "vscode-debugadapter": "^1.38.0",
-        "vscode-debugprotocol": "^1.38.0",
-        "vscode-languageclient": "^6.1.0",
-        "vscode-nls": "^4.1.1"
+        "vscode-debugadapter": "^1.44.0",
+        "vscode-debugprotocol": "^1.44.0",
+        "vscode-languageclient": "^6.1.4",
+        "vscode-nls": "^4.1.2"
     },
     "scripts": {
         "vscode:prepublish": "node copy.js",
@@ -40,7 +40,7 @@
             {
                 "name": "harbour",
                 "owner": "harbour",
-                "fileLocation": "relative",
+                "fileLocation": "autoDetect",
                 "pattern": {
                     "regexp": "^(?:([^\\(]*)\\((\\d+)\\)\\s+)(Warning|Error)\\s+(.*)$",
                     "file": 1,
@@ -52,7 +52,7 @@
         ],
         "commands": [
             {
-                "command": "harbour.getdbgcode",
+                "command": "harbour.getDbgCode",
                 "title": "%harbour.dbgCodeCmd%"
             }
         ],
@@ -364,6 +364,11 @@
                         "default": "${file}",
                         "description": "%harbour.task.HBMK2.input%"
                     },
+                    "output": {
+                        "type": "string",
+                        "default": "${file}",
+                        "description": "%harbour.task.HBMK2.output%"
+                    },
                     "extraArgs": {
                         "type": "array",
                         "items": {
@@ -482,7 +487,7 @@
         ]
     },
     "devDependencies": {
-        "webpack": "^4.41.6",
-        "webpack-cli": "^3.3.11"
+        "webpack": "^4.46.0",
+        "webpack-cli": "^3.3.12"
     }
 }

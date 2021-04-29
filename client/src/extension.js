@@ -7,6 +7,7 @@ const decorator = require('./decorator.js');
 const docCreator = require('./docCreator.js');
 const taskProvider = require('./taskProvider.js');
 const net = require("net");
+const debugProvider = require("./debugProvider.js");
 
 var diagnosticCollection;
 
@@ -34,13 +35,15 @@ function activate(context) {
 		}
 	}
 	var cl = new client.LanguageClient('HarbourServer', 'Harbour Server', serverOptions, clientOptions);
+	cl.registerProposedFeatures()
 	context.subscriptions.push(cl.start());
-	vscode.commands.registerCommand('harbour.getdbgcode', GetDbgCode);
+	vscode.commands.registerCommand('harbour.getDbgCode', GetDbgCode);
 	vscode.commands.registerCommand("harbour.debugList", DebugList)
 	//vscode.languages.registerFoldingRangeProvider(['harbour'], new decorator.HBProvider());
 	decorator.activate(context,cl);
 	docCreator.activate(context,cl);
 	taskProvider.activate();
+	//debugProvider.activate();
 }
 
 function DebugList(args) {
