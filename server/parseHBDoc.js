@@ -2,40 +2,52 @@ var fs = require("fs");
 var readline = require("readline");
 var path = require("path")
 
-var hbPath = "/home/perry/harbour-src"
-parseDocEn(path.join(hbPath,"doc","en"));
-parseHBX(path.join("include","harbour.hbx"));
-
 var nTodo = 0;
 var docs = [];
 var stdMethods = [];
-function parseDocEn(dir) 
-{
-	fs.readdir(dir, function (err, ff) 
-	{
+
+//walkPath(/home/perry/harbour-src)
+walkPath("c:\\harbour")
+function walkPath(dir) {
+	console.debug(`listing: ${dir}...`)
+	fs.readdir(dir, function (err, ff) {
 		if (ff == undefined)
 			return;
-		for (var i = 0; i < ff.length; i++)
-		{
-			new parseFile(dir + "/" + ff[i]);
+		for (var i = 0; i < ff.length; i++) {
+			let completePath = path.join(dir, ff[i]);
+			let info = fs.statSync(completePath);
+			const lowerFileName = ff[i].toLocaleLowerCase();
+			if(lowerFileName.endsWith(".txt")) {
+				new parseFile(completePath);
+			} else if(lowerFileName.endsWith(".hbx")) {
+				parseHBX(completePath);
+			} else if(info.isDirectory()) {
+				walkPath(completePath)
+			}
 		}
 	});
 }
 
-function parseHBX(path)
+////parseDocEn(path.join(hbPath,"doc","en")); // parsed 332 procedures (over 1579 standard)
+//parseDocEn(hbPath); //parsed 833 procedures (over 1579 standard)
+////parseDocEn("c:\\harbour\\contrib\\rddads\\doc\\en")
+//parseHBX(path.join(hbPath,"include","harbour.hbx"));
+
+function parseHBX(completePath)
 {
 	nTodo++;
+	let fileName = path.parse(completePath).name
 	var ck = /DYNAMIC\s+([_a-z0-9]+)/i;
-	var reader = readline.createInterface({input:fs.createReadStream(path,"utf8")});
-	reader.on("line",l => 
+	var reader = readline.createInterface({input:fs.createReadStream(completePath,"utf8")});
+	reader.on("line",l =>
 	{
 		var m = l.match(ck);
 		if(m && m[1])
 		{
-			stdMethods.push(m[1]);
+			stdMethods.push([m[1],fileName]);
 		}
-	});	
-	reader.on("close",() => 
+	});
+	reader.on("close",() =>
 	{
 		nTodo--;
 		if(nTodo==0)
@@ -44,13 +56,17 @@ function parseHBX(path)
 }
 function parseFile(path)
 {
+	//console.debug(`parsing: ${path}...`)
 	nTodo++;
 	this.inDoc = false;
 	this.lastSpecifyLine = ""
+	this.nFound = 0
 	this.reader = readline.createInterface({input:fs.createReadStream(path,"utf8")});
 	this.reader.on("line",l => this.parseLine(l));
-	this.reader.on("close",() => 
+	this.reader.on("close",() =>
 	{
+		if(this.nFound>0)
+			console.debug(`${path}: found ${this.nFound} doc...`)
 		nTodo--;
 		if(nTodo==0)
 			createDoc();
@@ -61,28 +77,29 @@ function createDoc()
 {
 	console.debug(`parsed ${docs.length} procedures (over ${stdMethods.length} standard)`)
 	docs.sort( (a,b) => a.name.localeCompare(b.name));
-	stdMethods.sort( (a,b) => a.localeCompare(b));
+	stdMethods.sort( (a,b) => a[0].localeCompare(b[0]));
 	var unDoc = [], extra = [];
 	var is = 0, id =0;
-	while(is<stdMethods.length || id<docs.length)
+	while(is<stdMethods.length && id<docs.length)
 	{
-		switch(stdMethods[is].localeCompare(docs[id].name))
+		switch(stdMethods[is][0].localeCompare(docs[id].name))
 		{
 			case  0: id++; is++; break; //are the same, go ahead both
-			case -1: unDoc.push(stdMethods[is]); is++; break; // Cathed! undocumentated method. 
+			case -1: unDoc.push(stdMethods[is]); is++; break; // Cathed! undocumentated method.
 			case 1: extra.push(docs[id].label); id++; break; // I don't write it anywhere, but extra contains documentated proc absent in hbx
 		}
 	}
-	var msg = "standard un documentated methods:\r\n"
+	var msg = "[\r\n"
 	for(var i=0;i<unDoc.length;i++)
-		msg += unDoc[i]+"\r\n";
-	
+		msg += `["${unDoc[i][0]}","${unDoc[i][1]}"],\r\n`;
+	msg=msg.slice(0,msg.length-3)
+	msg += "\r\n]";
 	fs.writeFile("src/hbdocs.missing",	msg, (err)=>{if(err) console.error(err);});
 	fs.writeFile("src/hbdocs.json",	JSON.stringify(docs,undefined,1),(err)=>{if(err) console.error(err);});
 }
 
 /**
- * @param {String} line 
+ * @param {String} line
  */
 parseFile.prototype.parseLine = function(line)
 {
@@ -90,11 +107,18 @@ parseFile.prototype.parseLine = function(line)
 	if(!this.inDoc)
 	{
 		this.inDoc = line == "/* $DOC$";
+		if(this.inDoc){
+			this.nFound++;
+			this.doc = {};
+			this.doc["label"] = undefined;
+			this.doc["documentation"] = undefined;
+			this.doc["arguments"] = [];
+		}
 		return
 	}
 	if(line == "*/")
 	{
-		if(this.doc)
+		if(this.doc && this.doc.label)
 			docs.push(this.doc);
 		this.doc = undefined;
 		this.inDoc = false;
@@ -103,19 +127,12 @@ parseFile.prototype.parseLine = function(line)
 	if(line.startsWith("$"))
 	{
 		this.lastSpecifyLine = line;
-		return 
+		return
 	}
 	switch(this.lastSpecifyLine)
 	{
 		case "$TEMPLATE$":
 			this.currentTemplate = line;
-			if(line=="Function" || line=="Procedure")
-			{
-				this.doc = {};
-				this.doc["label"] = undefined;
-				this.doc["documentation"] = undefined;
-				this.doc["arguments"] = [];
-			}
 			break;
 		case "$ONELINER$":
 			if(this.doc)
@@ -150,41 +167,40 @@ parseFile.prototype.parseLine = function(line)
 					}
 					this.doc["name"] = name;
 					this.doc["label"] = line;
-				}					
+				}
 			}
 			break;
 		case "$ARGUMENTS$":
-			if(this.doc && line.length>0)
-			{
-				var ck = /<[^>]+>/;
+			if(this.doc && line.length>0) {
+				var ck = /^\s*<[^>]+>/;
 				var mm = line.match(ck);
-				if(mm)
-				{
-					var arg = {};
-					arg["label"] = mm[0];
-					arg["documentation"] = line;
+				if(mm) {
+					var arg = {label:mm[0],documentation: line.replace(mm[0],"").trim()};
 					this.doc.arguments.push(arg);
-				}else
-				if(this.doc.arguments.length>0)
+				}else if(this.doc.arguments.length>0)
 					this.doc.arguments[this.doc.arguments.length-1].documentation += " " + line;
 			}
 			break;
 		case "$RETURNS$":
-			if(this.doc)
-			{
-				var ck = /<[^>]+>/;
+			if(this.doc && line.length>0) {
+				var ck = /^\s*<[^>]+>/;
 				var mm = line.match(ck);
-				if(mm)
-				{
-					var arg = {};
-					arg["name"] = mm[0];
-					arg["help"] = line.replace(mm[0],"").trim();
-					this.doc.return = arg;
-				}else
-				if(this.doc.return)
-					this.doc.return.help += " " + line;
+				if(mm) {
+					if(this.doc.return) {
+						this.doc.return.help += " " + line;
+					} else {
+						var arg = {name:mm[0], help: line.replace(mm[0],"").trim()};
+						this.doc.return = arg;
+					}
+				} else {
+					if(this.doc.return) {
+						this.doc.return.help += " " + line;
+					} else
+						this.doc.return = {name:"", help: line};
+
+				}
 			}
-			break;	
+			break;
 	}
 	/* templates:
 		Document

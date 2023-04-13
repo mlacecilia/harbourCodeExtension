@@ -4,9 +4,8 @@
 
 const path = require('path');
 
-/**@type {import('webpack').Configuration}*/
 const config = {
-  target: 'node', 
+  target: 'node',
   entry: {
     "extension": './src/extension.js',
     "debugger": './src/debugger.js'
@@ -18,13 +17,17 @@ const config = {
   },
   devtool: 'source-map',
   externals: {
-vscode: 'commonjs vscode'
+    vscode: 'commonjs vscode'
   },
   resolve: {
-    extensions: ['.js']
+    extensions: ['.js'],
+    alias: {
+      '@yagisumi/win-output-debug-string': path.join(__dirname,'node_modules/@yagisumi/win-output-debug-string/build/Release/win_output_debug_string.node')
+    }
   },
   module: {
     rules: [
+      {test: /\.node$/, use: 'node-loader'},
       {
         test: /\.js$/,
         exclude: /node_modules/

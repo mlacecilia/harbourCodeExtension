@@ -12,8 +12,9 @@ const formatEditor = require("./formatEditor.js");
 function activate(context) {
 	vscode.languages.setLanguageConfiguration('harbour', {
 		indentationRules: {
-			increaseIndentPattern: /^\s*((?:(?:static|init|exit)\s+)?(?:proc(?:e(?:d(?:u(?:r(?:e)?)?)?)?)?|func(?:t(?:i(?:o(?:n)?)?)?)?)|class|method|if|else(?:if)?|for|if|try|case|otherwise|(?:do\s+)?while|switch|begin)\b/i,
-			decreaseIndentPattern: /^\s*(end\s*([a-z]*)?|next|else|elseif|return)\b/i
+			increaseIndentPattern: /^\s*((?:(?:static|init|exit)\s+)?(?:proc(?:e(?:d(?:u(?:r(?:e)?)?)?)?)?|func(?:t(?:i(?:o(?:n)?)?)?)?)|class(?!\s*(?:var|data|method))|method|if|else(?:if)?|for|if|try|case|otherwise|(?:do\s+)?while|switch|begin)\b/i,
+			decreaseIndentPattern: /^\s*(end\s*([a-z]*)?|next|else|elseif|return)\b/i,
+			indentNextLinePattern: /;((?:\/\/|&&).*)?$/
 		}
 	});
 	validation.activate(context);
@@ -39,7 +40,16 @@ function activate(context) {
 	vscode.commands.registerCommand("harbour.setupCodeFormat", () => { formatEditor.showEditor(context); })
 	decorator.activate(context,cl);
 	docCreator.activate(context,cl);
-	taskProvider.activate();
+	taskProvider.activate();	
+	// https://code.visualstudio.com/updates/v1_30#:~:text=Finalized%20Debug%20Adapter%20Tracker%20API
+	/*vscode.debug.registerDebugAdapterTrackerFactory('harbour-dbg', {
+		createDebugAdapterTracker(  ) {
+		  return {
+			onWillReceiveMessage: m => console.log(`> ${m.seq} - C ${m.command} - ${m.arguments? JSON.stringify(m.arguments).substring(0,50) : "no-args"}`),
+			onDidSendMessage: m => console.log(`< ${m.seq} - ${m.command ? "C" : "E"} ${m.command ? m.command : m.event} - ${m.body? JSON.stringify(m.body).substring(0,50) : 'no-body'}`)
+		  };
+		}
+	  });*/
 }
 
 function DebugList(args) {

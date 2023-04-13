@@ -5,7 +5,6 @@ const path = require("path");
 const Uri = require("vscode-uri").URI;
 const trueCase = require("true-case-path")
 const server_textdocument = require("vscode-languageserver-textdocument");
-const { SemanticTokenTypes, TextEdit } = require('vscode-languageserver');
 
 var connection = server.createConnection(
     new server.IPCMessageReader(process),
@@ -13,23 +12,24 @@ var connection = server.createConnection(
 
 
 /** @type {Array<string>} */
-var workspaceRoots;
+var workspaceRoots = [];
 /** @type {Array<string>} */
-var includeDirs;
+var includeDirs = [];
 /** @type {number} */
 var workspaceDepth;
 /** @type {boolean} */
-var wordBasedSuggestions;
+var wordBasedSuggestions = true;
 /** @type {Object.<string, provider.Provider>} */
-var files;
+var files = {};
 /** @type {Object.<string, provider.Provider>} */
-var includes;
+var includes ={};
 /** the list of documentation harbour base functions
  * @type {Array<object>} */
-var docs;
+var docs = [];
 /** the list of undocumented harbour base functions
  * @type {Array<string>} */
-var missing
+var missing = [];
+
 /**
  * @typedef dbInfo
  * @property {string} dbInfo.name the name to show
@@ -40,7 +40,7 @@ var missing
  * @property {string[]} fieldInfo.files the list of files where the field is found
  */
 /** @type {Object.<string, dbInfo>} every key is the lowercase name of db */
-var databases;
+var databases = {};
 /** @type {boolean} */
 var canLocationLink;
 /** @type {boolean} */
@@ -89,7 +89,7 @@ connection.onInitialize(params => {
     });
     fs.readFile(path.join(__dirname, 'hbdocs.missing'), "utf8", (err, data) => {
         if (!err)
-            missing = data.split(/\r\n{1,2}/g)
+            missing = JSON.parse(data);
     });
     return {
         capabilities: {
@@ -146,62 +146,83 @@ connection.onDidChangeConfiguration(params => {
     // minimatch
     wordBasedSuggestions = params.settings.editor.wordBasedSuggestions
     currStyleConfig = params.settings.harbour.formatter;
-    var oldDirs = includeDirs;
     var oldDepth = workspaceDepth;
     includeDirs = params.settings.harbour.extraIncludePaths;
     includeDirs.splice(0, 0, ".")
     workspaceDepth = params.settings.harbour.workspaceDepth;
-    var doParse = workspaceDepth!=oldDepth || oldDirs.length!=includeDirs.length;
-    if(!doParse) {
-        for(let i=0;i<includeDirs.length;++i) {
-            doParse = doParse || includeDirs[i]!=oldDirs[i];
-        }
-    }
-    if(doParse)
-        ParseWorkspace();
-
+    if(workspaceDepth!=oldDepth)
+        parseWorkspace();
 })
 
-function ParseDir(dir, onlyHeader, depth, subirPaths) {
-    if (!subirPaths) subirPaths = [];
-    //fs.readdir(dir,{withFileTypes:true},function(err,ff)
-    fs.readdir(dir, function (err, ff) {
-        if (ff == undefined) return;
-        for (var i = 0; i < ff.length; i++) {
-            var fileName = ff[i];
-            var completePath = path.join(dir, fileName);
-            var info = fs.statSync(completePath);
-            if (info.isFile()) {
-                var ext = path.extname(fileName).toLowerCase();
-                if (onlyHeader && ext != ".ch" && ext != ".h") {
-                    continue;
+function parseWorkspace() {
+    var nOpenend=0, fileQueue = [];
+    function appendFile(completePath, cMode) {
+        if(nOpenend<1000) {
+            var fileUri = Uri.file(completePath);
+            var pp = new provider.Provider(true);
+            nOpenend++;
+            pp.parseFile(completePath, fileUri.toString(), cMode).then(
+                prov => {
+                    nOpenend--;
+                    UpdateFile(prov)
+                    if(fileQueue.length>0) {
+                        let nextFile = fileQueue.pop()
+                        appendFile(nextFile[0],nextFile[1])
+                    }
                 }
-                var cMode = (ext.startsWith(".c") && ext != ".ch") || ext == ".h"
-                if (cMode) {
-                    var harbourFile = path.basename(fileName)
-                    var pos = harbourFile.lastIndexOf(".");
-                    harbourFile = harbourFile.substr(0, pos < 0 ? harbourFile.length : pos) + ".prg";
-                    if (subirPaths.findIndex((v) => v.indexOf(harbourFile) >= 0) >= 0)
-                        continue;
-                }
-                if (ext == ".prg" || ext == ".ch" || cMode) {
-                    subirPaths.push(completePath);
-                    var fileUri = Uri.file(completePath);
-                    var pp = new provider.Provider(true);
-                    pp.parseFile(completePath, fileUri.toString(), cMode).then(
-                        prov => {
-                            UpdateFile(prov)
-                        }
-                    )
-                }
-            } else if (info.isDirectory() && depth > 0) {
-                ParseDir(path.join(dir, fileName), onlyHeader, depth - 1, subirPaths);
-            }
+            )
+        } else {
+            fileQueue.push([completePath,cMode])
         }
-    });
-}
+    }
+    function parseDir(dir, depth, prgFiles) {
+        if (!prgFiles) prgFiles = [];
+        //fs.readdir(dir,{withFileTypes:true},function(err,ff)
+        fs.readdir(dir, function (err, ff) {
+            if (ff == undefined) return;
+            let files = []; files.length=ff.length;
+            for (let i = 0; i < ff.length; i++) {
+                let dest = {name: ff[i]}
+                dest.completePath = path.join(dir, ff[i]);
+                dest.info = fs.statSync(dest.completePath);
+                dest.pathParse = path.parse(ff[i]);
+                dest.pathParse.ext = dest.pathParse.ext.toLowerCase()
+                if(dest.info.isFile()) {
+                    dest.prgFile = dest.pathParse.ext == ".prg" || dest.pathParse.ext == ".ch";
+                    dest.cFile = !dest.prgFile && (dest.pathParse.ext.startsWith(".c") || dest.pathParse.ext == ".h");
+                } else {
+                    dest.cFile = false;
+                    dest.prgFile = false;
+                }
+                files[i]=dest;
+            }
+            // 1st cycle: parse all harbour file
+            for (let i = 0; i < files.length; i++) {
+                let dest = files[i];
+                if(dest.prgFile) {
+                    prgFiles.push(dest.completePath);
+                    appendFile(dest.completePath, false)
+                }
+            }
+            // 2nd cycle: parse all c file
+            for (let i = 0; i < files.length; i++) {
+                let dest = files[i];
+                if(dest.cMode && (prgFiles.findIndex((v) => v.indexOf(dest.pathParse.name) >= 0) >= 0)) {
+                    appendFile(dest.completePath, true)
+                }
+            }
+            if(depth>0) {
+                // 1rd cycle: parse all sub dir
+                for (let i = 0; i < files.length; i++) {
+                    var dest = files[i];
+                    if(dest.info.isDirectory()) {
+                        parseDir(dest.completePath, depth - 1, prgFiles);
+                    }
+                }
 
-function ParseWorkspace() {
+            }
+        });
+    }
     databases = {};
     files = {};
     includes = {};
@@ -211,12 +232,8 @@ function ParseWorkspace() {
         /** @type {vscode-uri.default} */
         var uri = Uri.parse(workspaceRoots[i]);
         if (uri.scheme != "file") continue;
-        ParseDir(uri.fsPath, false, workspaceDepth);
+        parseDir(uri.fsPath, workspaceDepth);
     }
-    //for(var i=0;i<includeDirs.length;i++)
-    //{
-    //    ParseDir(includeDirs[i], true,0);
-    //}
 }
 
 /**
@@ -390,9 +407,10 @@ connection.onDocumentSymbol((param) => {
         var info = p.funcList[fn];
         if (info.kind == "field") continue;
         if (info.kind == "memvar") continue;
+        if (typeof(info.endLine)!="number") continue;
         var selRange = server.Range.create(info.startLine, info.startCol, info.endLine, info.endCol);
         if (info.endLine != info.startLine)
-            selRange.end = server.Position.create(info.startLine, 1000);
+            selRange.end = server.Position.create(info.startLine, 1e8);
         var docSym = server.DocumentSymbol.create(info.name,
             (info.comment && info.comment.length > 0 ? info.comment.replace(/[\r\n]+/g, " ") : ""),
             kindToVS(info.kind),
@@ -441,7 +459,18 @@ connection.onDocumentSymbol((param) => {
     return dest;
 });
 
+/**
+ * Checks if word1 is contained on word2, return a string with word1 filled with Z where it is not present on word2
+ * @param {String} word1 The string to search
+ * @param {String} word2 The string where search
+ * @returns undefined or the word1 with Z
+ * @example IsInside('a',"ciao") -> ZZa
+ * @example IsInside('ab',"ciao belli") -> ZZaZZb
+ * @example IsInside('ab',"ciao") -> undefined
+ */
 function IsInside(word1, word2) {
+    if(word1.length==0)
+        return ""
     var ret = "";
     var i1 = 0;
     var lenMatch = 0, maxLenMatch = 0, minLenMatch = word1.length;
@@ -471,8 +500,8 @@ connection.onWorkspaceSymbol((param) => {
     var colon = src.indexOf(':');
     if (colon > 0) {
         parent = src.substring(0, colon);
-        if (parent.endsWith("()")) parent = parent.substr(0, parent.length - 2);
-        src = src.substr(colon + 1);
+        if (parent.endsWith("()")) parent = parent.substring(0, parent.length - 2);
+        src = src.substring(colon + 1);
     }
     for (var file in files) { //if (files.hasOwnProperty(file)) {
         var pp = files[file];
@@ -503,6 +532,12 @@ connection.onWorkspaceSymbol((param) => {
     return dest;
 });
 
+/**
+ *
+ * @param {server.TextDocumentPositionParams} params
+ * @param {Boolean} withPrev
+ * @returns
+ */
 function GetWord(params, withPrev) {
     var doc = documents.get(params.textDocument.uri);
     var pos = doc.offsetAt(params.position);
@@ -512,7 +547,7 @@ function GetWord(params, withPrev) {
     var r = /\b[a-z_][a-z0-9_]*\b/gi
     while (true) {
         r.lastIndex = 0;
-        //var text = allText.substr(Math.max(pos-delta,0),delta+delta)
+        //var text = allText.substring(Math.max(pos-delta,0),pos+delta)
         var text = doc.getText(server.Range.create(doc.positionAt(Math.max(pos - delta, 0)), doc.positionAt(pos + delta)));
         var txtPos = pos < delta ? pos : delta;
         while (word = r.exec(text)) {
@@ -527,8 +562,16 @@ function GetWord(params, withPrev) {
                 while(idx>=0 && (prev==' ' || prev=='\t')) {
                     prev = text[--idx];
                 }
-            }
-            break
+                let canBreak = (prev!=' ' || prev!='\t')
+                if(prev==">") {
+                    canBreak=idx>0;
+                    if(canBreak)
+                        prev=text[--idx]+prev; //can become ->
+                }
+                if(canBreak)
+                    break
+            } else
+                break
         }
         delta += 10;
     }
@@ -663,13 +706,13 @@ connection.onSignatureHelp((params) => {
     var doc = documents.get(params.textDocument.uri);
     var pos = doc.offsetAt(params.position) - 1;
     /** @type {string} */
-    var text = doc.getText();
+    var text = doc.getText(); //here takes all text because the line can break with ;
     // backwards find (
     pos = findBracket(text, pos, -1, "(")
     if (pos === undefined) return pos;
     // Get parameter position
     var endPos = doc.offsetAt(params.position)
-    var nC = CountParameter(text.substr(pos + 1, endPos - pos - 1), doc.offsetAt(params.position) - pos - 1)
+    var nC = CountParameter(text.substring(pos + 1, endPos), doc.offsetAt(params.position) - pos - 1)
     // Get the word
     pos--;
     var rge = /[0-9a-z_]/i;
@@ -727,7 +770,7 @@ function findBracket(text, pos, dir, bracket) {
                 case '\n':
                     var nSpace = 1;
                     while((pos - nSpace)>0 && text[pos - nSpace] != '\n') nSpace++;
-                    var thisLine = text.substr(pos - nSpace + 1, nSpace)
+                    var thisLine = text.substring(pos - nSpace + 1, pos)
                     thisLine = thisLine.replace(/\/\/[^\n]*\n/, "\n")
                     thisLine = thisLine.replace(/&&[^\n]*\n/, "\n")
                     thisLine = thisLine.replace(/\s+\n/, "\n")
@@ -770,7 +813,7 @@ function CountParameter(txt, position) {
             })
         } while (someChange)
     }
-    return (txt.substr(0, position).match(/,/g) || []).length
+    return (txt.substring(0, position).match(/,/g) || []).length
 }
 
 function getWorkspaceSignatures(word, doc, className, nC) {
@@ -888,7 +931,7 @@ documents.onDidChangeContent((e) => {
     var cMode = (ext.startsWith(".c") && ext != ".ch")
     if (ext == ".prg" || ext == ".ch" || cMode) {
         var doGroups = false;
-        if (uri in files) doGroups = files[uri].doGroups;
+        if(uri in files) doGroups = files[uri].doGroups;
         var pp = parseDocument(e.document, (p) => { p.cMode = cMode; p.doGroups = doGroups; })
         UpdateFile(pp);
     }
@@ -906,7 +949,7 @@ function parseDocument(doc, onInit) {
     pp.currentDocument = doc.uri;
     if (onInit != undefined) onInit(pp);
     for (var i = 0; i < doc.lineCount; i++) {
-        pp.parse(doc.getText(server.Range.create(i, 0, i, 1000)));
+        pp.parse(doc.getText(server.Range.create(i, 0, i, 1e8)));
     }
     pp.endParse();
     return pp;
@@ -940,9 +983,18 @@ function getDocumentProvider(doc, checkGroup) {
 
 connection.onCompletion((param, cancelled) => {
     var doc = documents.get(param.textDocument.uri);
-    var line = doc.getText(server.Range.create(param.position.line, 0, param.position.line, 1000));
+    var line = doc.getText(server.Range.create(
+        server.Position.create(param.position.line, 0),
+        server.Position.create(param.position.line, 1e8)));
+    if(param.context?.triggerKind==server.CompletionTriggerKind.TriggerCharacter &&
+        line[param.position.character - 1]!=param.context?.triggerCharacter) {
+        // somethime the triggerCharacter is not included on the line
+        line = line.substring(0,param.position.character-1)+param.context?.triggerCharacter+line.substring(param.position.character-1)
+    }
     var include = /^\s*#(pragma\s+__(?:c|binary)?stream)?include\s+[<"]([^>"]*)/i.exec(line);
-    var prevLetter = doc.getText(server.Range.create(server.Position.create(param.position.line, param.position.character - 1), param.position));
+    var prevLetter = ""
+    if(param.position.character>0)
+        prevLetter = doc.getText(server.Range.create(server.Position.create(param.position.line, param.position.character - 1), param.position));
     if (include !== null) {
         if (prevLetter == '>') {
             return server.CompletionList.create([], false); // wrong call
@@ -956,27 +1008,24 @@ connection.onCompletion((param, cancelled) => {
             server.Range.create(server.Position.create(param.position.line, includePos),
                 server.Position.create(param.position.line, includePos + include[2].length - 1)));
     }
-    var allText = doc.getText();
     var completions = [];
-    var pos = doc.offsetAt(param.position) - 1
+    var pos = param.position.character-1;
     // Get the word
     var rge = /[0-9a-z_]/i;
     var word = "", className = undefined;
-    var pp = getDocumentProvider(doc);
-    while (pos >= 0 && rge.test(allText[pos])) {
-        word = allText[pos] + word;
+    while (pos >= 0 && rge.test(line[pos])) {
+        word = line[pos] + word;
         pos--;
     }
     word = word.toLowerCase();
-    var prevLetter = allText[pos];
+    var pp = getDocumentProvider(doc);
+    prevLetter = line[pos];
     if (prevLetter == '>') {
-        if (allText[pos - 1] == '-') {
+        if (pos>0 && line[pos - 1] == '-') {
             prevLetter = '->';
-            completions = CompletionDBFields(word, allText, pos, pp)
+            completions = CompletionDBFields(word, line, pos, pp)
             if (completions.length > 0)
                 return server.CompletionList.create(completions, true); // put true because added all known field of this db
-        } else {
-            return server.CompletionList.create([], false); // wrong call
         }
     }
     var done = {}
@@ -999,7 +1048,7 @@ connection.onCompletion((param, cancelled) => {
         return c;
     }
     if (prevLetter != '->' && prevLetter != ':') prevLetter = undefined;
-    if (word.length == 0 && prevLetter == undefined) return server.CompletionList.create(completions, false);
+    //if (word.length == 0 && prevLetter == undefined) return server.CompletionList.create(completions, false);
     if (!prevLetter) {
         for (var dbName in databases) {
             CheckAdd(databases[dbName].name, server.CompletionItemKind.Struct, "AAAA")
@@ -1092,28 +1141,29 @@ connection.onCompletion((param, cancelled) => {
         for (var i = 0; i < docs.length; i++) {
             var c = CheckAdd(docs[i].name, server.CompletionItemKind.Function, "AA")
             if (c) c.documentation = docs[i].documentation;
-            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, false);
+            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, true);
         }
         for (var i = 1; i < keywords.length; i++) {
             CheckAdd(keywords[i], server.CompletionItemKind.Keyword, "AAA")
-            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, false);
+            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, true);
         }
         for (var i = 1; i < missing.length; i++) {
-            CheckAdd(missing[i], server.CompletionItemKind.Function, "A")
-            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, false);
+            let c = CheckAdd(missing[i][0], server.CompletionItemKind.Function, "A")
+            if(c) c.detail = missing[i][1];
+            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, true);
         }
         //AddCommands(param, completions)
     }
     if (wordBasedSuggestions && !pp) {
         var wordRE = /\b[a-z_][a-z0-9_]*\b/gi
         var foundWord;
-        var pos = doc.offsetAt(param.position);
-        while (foundWord = wordRE.exec(allText)) {
+        var pos = param.position.character;
+        while (foundWord = wordRE.exec(line)) {
             // remove current word
             if (foundWord.index < pos && foundWord.index + foundWord[0].length >= pos)
                 continue;
             CheckAdd(foundWord[0], server.CompletionItemKind.Text, "")
-            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, false);
+            if (cancelled.isCancellationRequested) return server.CompletionList.create(completions, true);
         }
     }
     return server.CompletionList.create(completions, false);
@@ -1125,14 +1175,14 @@ connection.onCompletion((param, cancelled) => {
  * */
 function AddCommands(param, completions) {
     var doc = documents.get(param.textDocument.uri);
-    var line = doc.getText(server.Range.create(param.position.line,0,param.position.line,1000));
+    var line = doc.getText(server.Range.create(param.position.line,0,param.position.line,1e8));
     var nextLine = line;
     var contTest = /;(\/\*.*\*\/)*((\/\/|&&).*)?[\r\n]{1,2}$/;
     var startLine=param.position.line;
     var endLine=param.position.line;
     var i=1;
     while((param.position.line-i)>0) {
-        var prevLine=doc.getText(server.Range.create(param.position.line-i,0,param.position.line-i,1000));
+        var prevLine=doc.getText(server.Range.create(param.position.line-i,0,param.position.line-i,1e8));
         if(prevLine.match(contTest)) {
             line = prevLine+line;
             startLine = param.position.line-i;
@@ -1142,7 +1192,7 @@ function AddCommands(param, completions) {
     }
     i=1;
     while(nextLine.match(contTest)) {
-        nextLine = doc.getText(server.Range.create(param.position.line+i,0,param.position.line+i,1000));
+        nextLine = doc.getText(server.Range.create(param.position.line+i,0,param.position.line+i,1e8));
         line += nextLine;
         endLine = param.position.line+i;
         i++;
@@ -1173,9 +1223,9 @@ function completionFiles(word, startPath, allFiles, includeRange) {
     var deltaPath = ""
     var lastSlash = Math.max(word.lastIndexOf("\\"), word.lastIndexOf("/"))
     if (lastSlash > 0) {
-        foundSlash = word.substr(lastSlash,1)
-        deltaPath = word.substr(0, lastSlash);
-        word = word.substr(lastSlash + 1);
+        foundSlash = word.substring(lastSlash,lastSlash+1)
+        deltaPath = word.substring(0, lastSlash);
+        word = word.substring(lastSlash + 1);
     }
     if (process.platform.startsWith("win")) {
         word = word.toLowerCase();
@@ -1528,7 +1578,7 @@ connection.onRequest("harbour/docSnippet", (params) => {
     return snippet;
     })
 
-connection.onRequest(server.SemanticTokensRegistrationType.method, (param)=> {
+connection.onRequest(server.SemanticTokensRequest.method, (param) => {
     var doc = documents.get(param.textDocument.uri);
     if(!doc) return [];
     var ret = [];
@@ -1588,15 +1638,11 @@ connection.onRequest(server.SemanticTokensRegistrationType.method, (param)=> {
 function getNextNotSpace(doc,startPos) {
 
     var p;
-    var currPos, endPos = doc.positionAt(startPos);
-    do {
-        currPos = endPos;
-        startPos+=10;
-        endPos = doc.positionAt(startPos);
-        if(endPos.line==currPos.line && endPos.character==currPos.character)
-            return "";
-        p = doc.getText(server.Range.create(currPos,endPos)).trimStart();
-    } while(p.length==0 && endPos.line<=doc.lineCount)
+    var currPos = doc.positionAt(startPos);
+    var endPos = doc.positionAt(startPos);
+    endPos.line+=1
+    endPos.character=0;
+    p = doc.getText(server.Range.create(currPos,endPos)).trimStart();
     return p[0];
 }
 
@@ -1609,7 +1655,7 @@ connection.onReferences( (params) => {
     var kind = "variable"
     if(prev==':') kind= next=="("? "method" : "data";
              else  kind= next=="("? "function" : "variable";
-    if(prev==">") kind="field"
+    if(prev=="->") kind="field" //
     var ret = [];
     word = word[0].toLowerCase()
     var pThis;
@@ -1626,7 +1672,7 @@ connection.onReferences( (params) => {
         kind = def.kind
         if(def.kind.endsWith("*")) {
             onlyThis = true;
-            kind = kind.substr(0,kind.length-1)
+            kind = kind.substring(0,kind.length-1)
         }
         if(def.kind == "local") onlyThis = true;
         if(def.kind == "static") onlyThis = true;
@@ -1663,6 +1709,89 @@ connection.onReferences( (params) => {
     return ret;
 })
 
+/**
+ * Removes comment block and empties strings
+ * @param {String} _line
+ * @param {LineState} lineState
+ * @param {LineState} precLineState
+ * @returns String
+ * @note merge this wit linePP
+ */
+function getCleanline(_line, lineState, precLineState) {
+    var line = _line;
+    var i=0;
+    if(line.trim().length==0) return ""
+    if(lineState && lineState.type!=0) return "";
+    if(precLineState && precLineState.state==1) {
+        let endComment = line.indexOf("*/");
+        if (endComment == -1) {
+            return "";
+        }
+        line = " ".repeat(endComment+2) + line.substring(endComment + 2);
+        i = endComment+2;
+    }
+    let precCont = precLineState && precLineState.state==2
+    if((!precCont) && line.trimStart().startsWith("#")) {
+        return "";
+    }
+    var justStart = !precCont;
+    var prevC = " ", c = " ", prevCNoSpace="";
+    for (; i < line.length; i++) {
+        prevC = c;
+        prevCNoSpace = (c == " " || c == '\t') ? prevCNoSpace : c;
+        prevJustStart = justStart;
+        c = line[i];
+        if (justStart) {
+            justStart = (prevC == " " || prevC == '\t');
+            lineStart = i;
+        }
+        // check code
+        if (justStart && (c=='n' || c=='N') && line.substring(i,i+4).toLowerCase()=='note') {
+            return "";
+        }
+        if (c == "*") {
+            if (justStart) {
+                // commented line: skip
+                return "";
+            }
+            if (prevC == "/") {
+                var endComment = line.indexOf("*/", i + 1)
+                if (endComment > 0) {
+                    line = line.substring(0, i - 1) + " ".repeat(endComment - i + 3) + line.substring(endComment + 2);
+                    c=" ";
+                    i=endComment;
+                    continue;
+                } else {
+                    line = line.substring(0, i - 1)
+                    break;
+                }
+            }
+        }
+        if ((c == "/" && prevC == "/") || (c == "&" && prevC == "&")) {
+            //line = line.substring(0, i - 1)
+            break;
+        }
+        if (c == '"' || c=="'" || (c == "[" && /[^a-zA-Z0-9_\[\]]/.test(prevCNoSpace) && !/^\s*#/.test(line))) {
+            var endString = line.indexOf(c=="["? "]" : c, i+1);
+            if (c=='"' && (prevC == "e")) {
+                while(endString>0 && line[endString-1]=="\\") {
+                    endString = line.indexOf('"', endString+1);
+                }
+            }
+            if(endString<0) {
+                //error
+                line = line.substring(0, i - 1)
+                break;
+            }
+            line = line.substring(0, i+1) + " ".repeat(endString - i-1) + line.substring(endString);
+            i = endString+1;
+            c=" ";
+            continue;
+        }
+    }
+    return line;
+}
+
 connection.onDocumentFormatting( (params) => {
     var ret = [];
     var doc = documents.get(params.textDocument.uri);
@@ -1684,15 +1813,24 @@ connection.onDocumentFormatting( (params) => {
                 for(let l=info.startLine+1;l<info.endLine;++l) {
                     tabs[l]+=1;
                 }
+                let doLast = false;
+                if((info.kind.startsWith("func") || info.kind.startsWith("proc")) && info.foundLike=="definition") {
+                    let line = doc.getText(server.Range.create(info.endLine, 0, info.endLine, 1e8));
+                    //doLast = !/^\s*ret(u(r(n?)?)?)?/i.test(line);
+                    doLast = !(line.trimStart().toLowerCase().startsWith("ret"))
+                }
+                if(doLast) tabs[info.endLine]+=1
             }
         }
     }
     for(let i=0;i<pThis.groups.length;++i) {
-        var group = pThis.groups[i];
-        var doTab = false;
+        let group = pThis.groups[i];
+        let doTab = false;
+        let checkInside = false;
         switch(group.type) {
             case "if": case "try": case "sequence":
                 doTab = currStyleConfig.indent.logical;
+                checkInside = true;
                 break;
             case "for": case "while":
                 doTab = currStyleConfig.indent.cycle;
@@ -1708,6 +1846,12 @@ connection.onDocumentFormatting( (params) => {
             for(let l=startLine;l<endLine;++l) {
                 tabs[l]+=1;
             }
+            if(checkInside) {
+                for(let p=1;p<group.positions.length-1;++p) {
+                    tabs[group.positions[p].line]-=1;
+                }
+            }
+
         }
         if(currStyleConfig.indent.switch && currStyleConfig.indent.case &&
                 group.type=="case") {
@@ -1718,25 +1862,88 @@ connection.onDocumentFormatting( (params) => {
                 tabs[l]+=2;
             }
             for(let p=1;p<group.positions.length;++p) {
-                if(group.positions[p].text=="case")
+                if(group.positions[p].text[0].startsWith('case'))
                     tabs[group.positions[p].line]-=1;
             }
         }
     }
     for(let i=0;i<doc.lineCount;++i) {
-        if(tabs[i]>0) {
-            let line = doc.getText(server.Range.create(i, 0, i, 1000));
+        let state = pThis.lineStates[i];
+        let precState = i==0? state : pThis.lineStates[i-1]
+        if(state.type==0 && precState.state!=1) {
+            let t = tabs[i];
+            let precCont = precState.state==2
+            if(i>0 && precCont) t++;
+            let line = doc.getText(server.Range.create(i, 0, i, 1e8));
+            let firstNoSpace=0;
+            while(line[firstNoSpace]==" " || line[firstNoSpace]=="\t") firstNoSpace++;
+            let line2 = getCleanline(line, state, precState);
+            if(currStyleConfig.replace.not!="ignore") {
+                if(currStyleConfig.replace.not=="use .not.") {
+                    let p = line2.lastIndexOf("!")
+                    while(p>0) {
+                        let currRange = server.Range.create(i, p, i, p+1);
+                        ret.push(server.TextEdit.replace(currRange, ".not."));
+                        p = line2.lastIndexOf("!",p-1)
+                    }
+                }
+                if(currStyleConfig.replace.not=="use !") {
+                    let p = line2.lastIndexOf(".not.")
+                    while(p>0) {
+                        let currRange = server.Range.create(i, p, i, p+5);
+                        ret.push(server.TextEdit.replace(currRange, "!"));
+                        p = line2.lastIndexOf(".not.",p-1)
+                    }
+                }
+            }
+            let commentReplaced = false
+            if(precState.state==0 && currStyleConfig.replace.asterisk!="ignore") {
+                if(/^\s*(\*|\/\/|&&|note)/i.test(line)) {
+                    commentReplaced = true
+                    let firstChar = line.substring(firstNoSpace,firstNoSpace+1);//line2.trimStart().substring(0,1);
+                    let commentLen = 2;
+                    if(firstChar=="*") commentLen = 1;
+                    if(firstChar=="n") commentLen = 4;
+                    if(firstChar=="N") commentLen = 4;
+                    if(currStyleConfig.replace.asterisk=="use //" && firstChar!="/") {
+                        let currRange = server.Range.create(i, firstNoSpace, i, firstNoSpace+commentLen);
+                        ret.push(server.TextEdit.replace(currRange, "//"));
+                    }
+                    if(currStyleConfig.replace.asterisk=="use &&" && firstChar!="&") {
+                        let currRange = server.Range.create(i, firstNoSpace, i, firstNoSpace+commentLen);
+                        ret.push(server.TextEdit.replace(currRange, "&&"));
+                    }
+                    if(currStyleConfig.replace.asterisk=="use *" && firstChar!="*") {
+                        let currRange = server.Range.create(i, firstNoSpace, i, firstNoSpace+commentLen);
+                        ret.push(server.TextEdit.replace(currRange, "*"));
+                    }
+                }
+            }
+            if(!commentReplaced && currStyleConfig.replace.amp!="ignore") {
+                if(currStyleConfig.replace.asterisk=="use //") {
+                    let pAmp = line2.indexOf("&&");
+                    if(pAmp>0) {
+                        let currRange = server.Range.create(i, pAmp, i, pAmp+2);
+                        ret.push(server.TextEdit.replace(currRange, "//"));
+                    }
+                }
+                if(currStyleConfig.replace.asterisk=="use &&") {
+                    let pAmp = line2.indexOf("//");
+                    if(pAmp>0) {
+                        let currRange = server.Range.create(i, pAmp, i, pAmp+2);
+                        ret.push(server.TextEdit.replace(currRange, "&&"));
+                    }
+                }
+            }
             var unspaced = line.trimStart();
             if(unspaced.length>0) {
                 var space = "";
                 if(params.options.insertSpaces)
-                    space = " ".repeat(params.options.tabSize * tabs[i]);
+                    space = " ".repeat(params.options.tabSize * t);
                 else
-                    space = "\t".repeat(tabs[i]);
+                    space = "\t".repeat(t);
                 if(!line.startsWith(space) || line[space.length]==" " || line[space.length]=="\t") {
-                    var firstNoSpace=0;
-                    while(line[firstNoSpace]==" " || line[firstNoSpace]=="\t") firstNoSpace++;
-                    var currRange = server.Range.create(i, 0, i, firstNoSpace);
+                    let currRange = server.Range.create(i, 0, i, firstNoSpace);
                     ret.push(server.TextEdit.replace(currRange, space));
                 }
             }

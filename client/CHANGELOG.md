@@ -1,6 +1,35 @@
 # Change Log
 All notable changes to the "Harbour and xHarbour" extension will be documented in this file.
 
+# 1.0.7
+ - **Server** fixed completion on trigger character
+ - **Debugger** fixed start on non-windows system [#87](https://github.com/APerricone/harbourCodeExtension/issues/86)
+
+
+# 1.0.6
+ - **Server** better classData, classVar, classMethod support
+ - **Syntax** better classData, classVar, classMethod support
+ - **Debugger** better handshake
+
+# 1.0.5
+ - **Server** Added classData, classVar, classMethod support [#86](https://github.com/APerricone/harbourCodeExtension/issues/86)
+ - **Syntax** Added classData, classVar, classMethod support
+ - **Validation** Better Ambiguous reference support [#85](https://github.com/APerricone/harbourCodeExtension/issues/85)
+
+# 1.0.4
+ - **Debugger** Added messages in case of early exit [#84](https://github.com/APerricone/harbourCodeExtension/issues/84)
+ - **Debugger** Added wapi_OutputDebugString/hb_OutDebug support on windows using [@yagisumi/win-output-debug-string](https://github.com/yagisumi/node-win-output-debug-string)
+ - **Sever** Added some documented in not-standard way functions and procedures
+
+# 1.0.3
+ - **Server** fixed some formatter behaviour
+ - **Debugger** better completition
+
+# 1.0.2
+  - **Debugger** Added workareas
+  - **Server** first version of formatter
+  - **Client** added code style configurator
+
 # 1.0.1
  - **server** fixed table name reader [#73](https://github.com/APerricone/harbourCodeExtension/issues/73)
  - **server** better go to declarection [#74](https://github.com/APerricone/harbourCodeExtension/issues/74)
